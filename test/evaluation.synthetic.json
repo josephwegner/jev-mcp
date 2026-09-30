@@ -1,5 +1,29 @@
 [
- {"id":"synthetic-1","categoryId":"food","confirmedCategoryId":"food","confidence":0.99,"model":"mock-jev","policyVersion":"1","reviewFlags":["human_review_required"]},
- {"id":"synthetic-2","categoryId":null,"confirmedCategoryId":"household","confidence":0.99,"model":"mock-jev","policyVersion":"1","reviewFlags":["mixed_merchant_without_item_evidence"]},
- {"id":"synthetic-3","categoryId":"food","confirmedCategoryId":"household","confidence":0.4,"model":"mock-jev","policyVersion":"1","reviewFlags":["low_concentration"]}
+  {
+    "id": "synthetic-1",
+    "categoryId": "food",
+    "confirmedCategoryId": "food",
+    "confidence": 0.99,
+    "model": "mock-jev",
+    "policyVersion": "1",
+    "reviewFlags": ["human_review_required"]
+  },
+  {
+    "id": "synthetic-2",
+    "categoryId": null,
+    "confirmedCategoryId": "household",
+    "confidence": 0.99,
+    "model": "mock-jev",
+    "policyVersion": "1",
+    "reviewFlags": ["mixed_merchant_without_item_evidence"]
+  },
+  {
+    "id": "synthetic-3",
+    "categoryId": "food",
+    "confirmedCategoryId": "household",
+    "confidence": 0.4,
+    "model": "mock-jev",
+    "policyVersion": "1",
+    "reviewFlags": ["low_concentration"]
+  }
 ]

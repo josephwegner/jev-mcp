@@ -10,18 +10,13 @@
     "statePrefix": "tenants/TENANT_ID/apps",
     "stateRoleArn": "STATE_ROLE_ARN"
   },
-  "lambdas": [
-    "mcp"
-  ],
+  "lambdas": ["mcp"],
   "frontend": {
     "buildCommand": "false",
     "distDir": "dist/frontend"
   },
   "esbuild": {
     "target": "node20",
-    "external": [
-      "aws-sdk",
-      "aws-lambda"
-    ]
+    "external": ["aws-sdk", "aws-lambda"]
   }
 }

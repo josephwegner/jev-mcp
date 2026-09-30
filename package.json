@@ -1,1 +1,34 @@
-{"name":"jev-mcp","version":"0.1.0","private":true,"type":"module","scripts":{"test":"tsx --test test/*.test.ts","typecheck":"tsc --noEmit","lint":"eslint src lambdas test scripts","build":"esbuild lambdas/mcp/index.ts --bundle --platform=node --target=node20 --outfile=dist/lambdas/mcp/index.js","evaluate":"tsx scripts/evaluate.ts","deploy:seed":"tsx node_modules/family-paas/packages/deploy/src/index.ts --seed-lambdas","deploy:lambdas":"tsx node_modules/family-paas/packages/deploy/src/index.ts --lambdas-only","terraform:init":"tsx node_modules/family-paas/packages/deploy/src/index.ts --terraform-init"},"dependencies":{"@aws-sdk/client-secrets-manager":"^3.0.0","jose":"^6.0.0","zod":"^4.0.0","family-paas":"https://codeload.github.com/josephwegner/family-paas/tar.gz/a59d41e0469d1a1336110fa2d6e46ee07f2eb168"},"devDependencies":{"@types/aws-lambda":"^8.10.0","@types/node":"^24.0.0","typescript":"~5.9.0","tsx":"^4.20.0","esbuild":"^0.27.0","eslint":"^9.0.0","typescript-eslint":"^8.0.0"}}
+{
+  "name": "jev-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src lambdas test scripts",
+    "build": "esbuild lambdas/mcp/index.ts --bundle --platform=node --target=node20 --outfile=dist/lambdas/mcp/index.js",
+    "evaluate": "tsx scripts/evaluate.ts",
+    "deploy:seed": "tsx node_modules/family-paas/packages/deploy/src/index.ts --seed-lambdas",
+    "deploy:lambdas": "tsx node_modules/family-paas/packages/deploy/src/index.ts --lambdas-only",
+    "terraform:init": "tsx node_modules/family-paas/packages/deploy/src/index.ts --terraform-init",
+    "format": "prettier --write \"{src,lambdas,test,scripts}/**/*.{ts,json}\" \"*.{js,json}\"",
+    "format:check": "prettier --check \"{src,lambdas,test,scripts}/**/*.{ts,json}\" \"*.{js,json}\""
+  },
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.0.0",
+    "family-paas": "https://codeload.github.com/josephwegner/family-paas/tar.gz/a59d41e0469d1a1336110fa2d6e46ee07f2eb168",
+    "jose": "^6.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.0",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.27.0",
+    "eslint": "^9.0.0",
+    "prettier": "3.9.9",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.0",
+    "typescript-eslint": "^8.0.0"
+  }
+}

@@ -9,6 +9,7 @@ npm ci --ignore-scripts
 npm test
 npm run typecheck
 npm run lint
+npm run format:check
 npm run build
 npm run evaluate -- test/evaluation.synthetic.json
 terraform -chdir=terraform init -backend=false
@@ -16,6 +17,8 @@ terraform -chdir=terraform validate
 terraform -chdir=terraform test
 terraform fmt -check -recursive terraform
 ```
+
+Use `npm run format` to format TypeScript, JavaScript, and JSON, and `terraform fmt -recursive terraform` for infrastructure. Formatting uses two-space indentation, single quotes in code, and a 90-column target.
 
 Tests use synthetic data and mocked inference/Secrets Manager; JWT tests use ephemeral test keys. These commands do not call Jev or provision AWS. The Lambda bundle follows the platform's CommonJS `index.handler` convention; the deploy ZIP contains the bundle without this repository's ESM package.json.
 
