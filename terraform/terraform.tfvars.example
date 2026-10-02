@@ -4,3 +4,4 @@ allowed_subjects    = ["joe"]
 oauth_password_hash = "REPLACE_WITH_SHA256_HEX"
 allowed_origins     = []
 jev_secret_arn      = "arn:aws:secretsmanager:us-east-1:111122223333:secret:jev-api-key-ABCDEF"
+oauth_kms_key_arn   = "arn:aws:kms:us-east-1:111122223333:key/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
