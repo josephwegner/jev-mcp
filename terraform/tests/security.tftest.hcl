@@ -1,4 +1,7 @@
 mock_provider "aws" {
+  mock_resource "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::111122223333:role/mock-lambda" }
+  }
   mock_data "aws_caller_identity" {
     defaults = { account_id = "111122223333" }
   }
@@ -48,4 +51,18 @@ run "reject_invalid_password_hash" {
     oauth_password_hash = "not-a-hash"
   }
   expect_failures = [var.oauth_password_hash]
+}
+
+run "refresh_permissions" {
+  # Only mock resources: no AWS calls or infrastructure changes.
+  command = apply
+  plan_options {
+    target = [aws_iam_role_policy.runtime]
+  }
+  assert {
+    condition = anytrue([for statement in jsondecode(aws_iam_role_policy.runtime.policy).Statement :
+      contains(statement.Action, "dynamodb:UpdateItem") && statement.Resource == aws_dynamodb_table.oauth_codes.arn
+    ])
+    error_message = "Refresh rotation/revocation requires UpdateItem scoped to the OAuth table."
+  }
 }

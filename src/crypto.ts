@@ -1,7 +1,6 @@
 import {
   DeleteItemCommand,
   DynamoDBClient,
-  GetItemCommand,
   PutItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import {
@@ -42,18 +41,17 @@ export function dynamoCodeStore(
     },
 
     async takeCode(code: string): Promise<AuthCode | undefined> {
+      // Atomic deletion returns the code to exactly one concurrent exchange.
       const existing = await client.send(
-        new GetItemCommand({ TableName: table, Key: { pk: { S: code } } }),
+        new DeleteItemCommand({
+          TableName: table,
+          Key: { pk: { S: code } },
+          ReturnValues: "ALL_OLD",
+        }),
         { abortSignal: abort() },
       );
-      if (!existing.Item) return undefined;
-
-      await client.send(
-        new DeleteItemCommand({ TableName: table, Key: { pk: { S: code } } }),
-        { abortSignal: abort() },
-      );
-
-      const item = existing.Item;
+      if (!existing.Attributes) return undefined;
+      const item = existing.Attributes;
       if (
         !item.challenge?.S ||
         !item.redirect?.S ||

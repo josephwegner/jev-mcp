@@ -63,7 +63,7 @@ resource "aws_iam_role_policy" "runtime" {
     Statement = concat([
       { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = var.jev_secret_arn },
       { Effect = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"], Resource = "arn:aws:logs:${var.region}:${var.workload_account_id}:log-group:/aws/lambda/${var.app_name}-mcp-${var.environment}:*" },
-      { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"], Resource = aws_dynamodb_table.oauth_codes.arn },
+      { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:UpdateItem"], Resource = aws_dynamodb_table.oauth_codes.arn },
       { Effect = "Allow", Action = ["kms:Sign", "kms:GetPublicKey"], Resource = aws_kms_key.oauth.arn }
       ], var.jev_kms_key_arn == null ? [] : [
       { Effect = "Allow", Action = ["kms:Decrypt"], Resource = var.jev_kms_key_arn, Condition = { StringEquals = { "kms:ViaService" = "secretsmanager.${var.region}.amazonaws.com", "kms:EncryptionContext:SecretARN" = var.jev_secret_arn } } }
@@ -115,6 +115,7 @@ module "api" {
     "GET /authorize",
     "POST /authorize",
     "POST /token",
+    "POST /revoke",
     ] : {
     route_key     = route
     function_arn  = module.mcp.alias_invoke_arn

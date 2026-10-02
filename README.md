@@ -83,8 +83,11 @@ Public, unauthenticated routes:
 - `GET /.well-known/jwks.json`
 - `GET|POST /authorize`
 - `POST /token`
+- `POST /revoke`
 
-Issuer and resource are `https://{apiId}.execute-api.{region}.amazonaws.com` and that origin plus `/mcp`. Tokens are RS256 via a dedicated KMS key. Authorization codes live in DynamoDB for 120 seconds and are single-use. PKCE S256 is required. ChatGPT's stable CIMD (`https://chatgpt.com/oauth/client.json`) and redirect (`https://chatgpt.com/connector_platform_oauth_redirect`) are allowlisted; callback-id CIMD documents under `https://chatgpt.com/oauth/` are fetched and checked for the requested redirect.
+Issuer and resource are `https://{apiId}.execute-api.{region}.amazonaws.com` and that origin plus `/mcp`. Tokens are RS256 via a dedicated KMS key. Authorization codes live in DynamoDB for 120 seconds and are single-use. PKCE S256 is required. ChatGPT's stable CIMD (`https://chatgpt.com/oauth/client.json`) and redirect (`https://chatgpt.com/connector_platform_oauth_redirect`) are allowlisted; callback-id CIMD URLs under `https://chatgpt.com/oauth/` are matched locally to the same callback ID in the redirect.
+
+Authorization-code exchange also issues a rotating opaque refresh token. Refresh grants expire after 30 days or seven idle days, recheck configured membership, and revoke the entire family on reuse. `/revoke` revokes refresh grants; existing access JWTs expire normally. This rollout requires Terraform IAM/API changes before Lambda deployment; see [refresh security, verification and rollout](docs/oauth-refresh-verification.md).
 
 Set `allowed_subjects` to the username(s) that may sign in. Set `oauth_password_hash` to `printf '%s' 'your-password' | shasum -a 256`. After deploy, paste `mcp_url` into ChatGPT. The first connect opens `/authorize`; sign in with that username and password.
 
@@ -106,7 +109,9 @@ Jev calls use the fixed `https://api.typesafe.ai/v1/systemone` endpoint, 12-seco
 
 The earlier 0.2.0 update was published to fork main as `ed04929` before the general-interface clarification arrived. This 0.3.0 change follows it as a separate commit, preserving that history. The current verification report is [docs/general-inference-verification.md](docs/general-inference-verification.md); older reports describe historical implementations.
 
-After publishing/reviewing this update, an authorized operator uses the existing workload SSO/profile and ignored app configuration to run `npm run deploy:lambdas`. No Terraform apply, OAuth expansion or credential changes are needed for this code-only update. Refresh the client's cached tool discovery and confirm initialize reports 0.3.0 and tools/list advertises only `evaluate_state` before the first real inference call. Publication does not imply the connected service is updated. No deployment or paid inference was performed during development.
+The following paragraph describes the earlier 0.3.0 general-inference rollout only. The OAuth refresh update requires the infrastructure-first steps in [the refresh rollout](docs/oauth-refresh-verification.md).
+
+After publishing/reviewing the 0.3.0 general-inference update, an authorized operator uses the existing workload SSO/profile and ignored app configuration to run `npm run deploy:lambdas`. No Terraform apply, OAuth expansion or credential changes are needed for this code-only update. Refresh the client's cached tool discovery and confirm initialize reports 0.3.0 and tools/list advertises only `evaluate_state` before the first real inference call. Publication does not imply the connected service is updated. No deployment or paid inference was performed during development.
 
 ## Verified upstream contracts
 

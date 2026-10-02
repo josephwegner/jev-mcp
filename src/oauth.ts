@@ -1,5 +1,19 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { exportJWK, importSPKI, type JWK } from "jose";
+import {
+  newRefreshToken,
+  refreshHash,
+  validRefreshToken,
+  REFRESH_LIFETIME_MS,
+  REFRESH_IDLE_MS,
+  type RefreshStore,
+  type RefreshGrant,
+} from "./refresh.js";
 import { SCOPE } from "./auth.js";
 
 export const CHATGPT_CIMD = "https://chatgpt.com/oauth/client.json";
@@ -24,6 +38,7 @@ export interface AuthCode {
 }
 
 export interface OAuthConfig {
+  refresh: RefreshStore;
   issuer: string;
   resource: string;
   subjects: string[];
@@ -54,7 +69,9 @@ export function authorizationServerMetadata(issuer: string) {
     token_endpoint: `${issuer}/token`,
     jwks_uri: `${issuer}/.well-known/jwks.json`,
     response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    revocation_endpoint: `${issuer}/revoke`,
+    revocation_endpoint_auth_methods_supported: ["none"],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
     scopes_supported: [SCOPE],
@@ -107,6 +124,7 @@ function errorPage(message: string): OAuthResult {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
+      pragma: "no-cache",
     },
     body: htmlPage("Authorization failed", `<p>${message}</p>`),
   };
@@ -118,6 +136,7 @@ function jsonError(statusCode: number, error: string): OAuthResult {
     headers: {
       "content-type": "application/json",
       "cache-control": "no-store",
+      pragma: "no-cache",
     },
     body: { error },
   };
@@ -160,12 +179,10 @@ async function allowedClient(
   // Callback-specific ChatGPT clients bind the same opaque callback ID into
   // both URLs. Matching them locally avoids depending on an outbound fetch
   // during the interactive authorization request.
-  const clientMatch = /^https:\/\/chatgpt\.com\/oauth\/([^/]+)\/client\.json$/.exec(
-    clientId,
-  );
-  const redirectMatch = /^https:\/\/chatgpt\.com\/connector\/oauth\/([^/]+)$/.exec(
-    redirect,
-  );
+  const clientMatch =
+    /^https:\/\/chatgpt\.com\/oauth\/([^/]+)\/client\.json$/.exec(clientId);
+  const redirectMatch =
+    /^https:\/\/chatgpt\.com\/connector\/oauth\/([^/]+)$/.exec(redirect);
   return Boolean(
     clientMatch && redirectMatch && clientMatch[1] === redirectMatch[1],
   );
@@ -200,6 +217,7 @@ export function authorizeForm(params: URLSearchParams): OAuthResult {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
+      pragma: "no-cache",
     },
     body: htmlPage("Sign in", form),
   };
@@ -291,29 +309,145 @@ export async function handleToken(
   }
 
   const params = new URLSearchParams(rawBody);
-  if (params.get("grant_type") !== "authorization_code") {
-    return jsonError(400, "unsupported_grant_type");
-  }
-
-  const code = params.get("code") || "";
-  const verifier = params.get("code_verifier") || "";
-  const redirect = params.get("redirect_uri") || "";
-  const clientId = params.get("client_id") || "";
-  const resource = params.get("resource") || "";
-  if (!code || !VERIFIER_RE.test(verifier))
+  if ([...params.keys()].some((key) => params.getAll(key).length !== 1))
     return jsonError(400, "invalid_request");
+  try {
+    if (params.get("grant_type") === "refresh_token")
+      return await handleRefresh(params, config);
+    if (params.get("grant_type") !== "authorization_code") {
+      return jsonError(400, "unsupported_grant_type");
+    }
 
-  const record = await config.takeCode(code);
+    const code = params.get("code") || "";
+    const verifier = params.get("code_verifier") || "";
+    const redirect = params.get("redirect_uri") || "";
+    const clientId = params.get("client_id") || "";
+    const resource = params.get("resource") || "";
+    if (!validRefreshToken(code) || !VERIFIER_RE.test(verifier))
+      return jsonError(400, "invalid_request");
+
+    const record = await config.takeCode(code);
+    const now = (config.now || Date.now)();
+    const grantOk =
+      record &&
+      record.expires > now &&
+      record.redirect === redirect &&
+      record.clientId === clientId &&
+      record.resource === resource &&
+      resource === config.resource &&
+      config.subjects.includes(record.subject) &&
+      s256(verifier) === record.challenge;
+    if (!grantOk || !record) return jsonError(400, "invalid_grant");
+
+    const refreshToken = newRefreshToken();
+    const grant: RefreshGrant = {
+      id: randomUUID(),
+      currentHash: refreshHash(refreshToken),
+      clientId,
+      subject: record.subject,
+      issuer: config.issuer,
+      resource,
+      scope: SCOPE,
+      expires: now + REFRESH_LIFETIME_MS,
+      idleExpires: now + REFRESH_IDLE_MS,
+      revoked: false,
+    };
+    const result = await tokenResponse(
+      record.subject,
+      refreshToken,
+      now,
+      config,
+    );
+    await config.refresh.create(grant);
+    return result;
+  } catch {
+    // Never expose SDK errors, request parameters, tokens, or signing inputs.
+    return jsonError(503, "temporarily_unavailable");
+  }
+}
+
+async function handleRefresh(
+  params: URLSearchParams,
+  config: OAuthConfig,
+): Promise<OAuthResult> {
+  const token = params.get("refresh_token") || "";
+  const clientId = params.get("client_id") || "";
+  if (!validRefreshToken(token) || !clientId)
+    return jsonError(400, "invalid_request");
+  const hash = refreshHash(token);
+  const grant = await config.refresh.get(hash);
+  if (
+    !grant ||
+    grant.clientId !== clientId ||
+    grant.issuer !== config.issuer ||
+    grant.resource !== config.resource ||
+    grant.scope !== SCOPE ||
+    (params.has("resource") && params.get("resource") !== grant.resource)
+  )
+    return jsonError(400, "invalid_grant");
+  if (params.has("scope") && params.get("scope") !== grant.scope)
+    return jsonError(400, "invalid_scope");
   const now = (config.now || Date.now)();
-  const grantOk =
-    record &&
-    record.expires > now &&
-    record.redirect === redirect &&
-    record.clientId === clientId &&
-    record.resource === resource &&
-    s256(verifier) === record.challenge;
-  if (!grantOk || !record) return jsonError(400, "invalid_grant");
+  if (grant.revoked || grant.expires <= now || grant.idleExpires <= now)
+    return jsonError(400, "invalid_grant");
+  if (grant.currentHash !== hash || !config.subjects.includes(grant.subject)) {
+    await config.refresh.revoke(grant.id);
+    return jsonError(400, "invalid_grant");
+  }
+  const nextToken = newRefreshToken();
+  const response = await tokenResponse(grant.subject, nextToken, now, config);
+  if (!(await config.refresh.rotate(grant, refreshHash(nextToken), now))) {
+    // A failed compare-and-swap can be legitimate concurrent reuse; revoke
+    // the family because a public bearer token cannot distinguish it from theft.
+    await config.refresh.revoke(grant.id);
+    return jsonError(400, "invalid_grant");
+  }
+  return response;
+}
 
+export async function handleRevoke(
+  rawBody: string,
+  contentType: string | undefined,
+  config: OAuthConfig,
+): Promise<OAuthResult> {
+  if (
+    !(contentType || "")
+      .toLowerCase()
+      .includes("application/x-www-form-urlencoded")
+  )
+    return jsonError(400, "invalid_request");
+  const params = new URLSearchParams(rawBody);
+  if (
+    [...params.keys()].some((key) => params.getAll(key).length !== 1) ||
+    !params.get("token") ||
+    !params.get("client_id")
+  )
+    return jsonError(400, "invalid_request");
+  // RFC 7009 hints are advisory; search our supported refresh-token type.
+  try {
+    const token = params.get("token")!;
+    const grant = validRefreshToken(token)
+      ? await config.refresh.get(refreshHash(token))
+      : undefined;
+    if (
+      grant &&
+      grant.clientId === params.get("client_id") &&
+      grant.issuer === config.issuer &&
+      grant.resource === config.resource
+    )
+      await config.refresh.revoke(grant.id);
+    return { statusCode: 200, headers: { "cache-control": "no-store" } };
+  } catch {
+    return jsonError(503, "temporarily_unavailable");
+  }
+}
+
+async function tokenResponse(
+  subject: string,
+  refreshToken: string,
+  now: number,
+  config: OAuthConfig,
+): Promise<OAuthResult> {
   const iat = Math.floor(now / 1000);
   const header = Buffer.from(
     JSON.stringify({
@@ -326,7 +460,7 @@ export async function handleToken(
     JSON.stringify({
       iss: config.issuer,
       aud: config.resource,
-      sub: record.subject,
+      sub: subject,
       scope: SCOPE,
       token_use: "access",
       iat,
@@ -340,9 +474,11 @@ export async function handleToken(
     headers: {
       "content-type": "application/json",
       "cache-control": "no-store",
+      pragma: "no-cache",
     },
     body: {
       access_token: `${header}.${payload}.${Buffer.from(signature).toString("base64url")}`,
+      refresh_token: refreshToken,
       token_type: "Bearer",
       expires_in: ACCESS_TTL_SEC,
       scope: SCOPE,

@@ -22,6 +22,7 @@ import {
   authorizationServerMetadata,
   handleAuthorize,
   handleToken,
+  handleRevoke,
   publicJwks,
   type OAuthConfig,
   type OAuthResult,
@@ -113,10 +114,10 @@ export function createHandler(
           ),
         );
       }
-      if (path === "/token") {
+      if (path === "/token" || path === "/revoke") {
         return method === "POST"
           ? fromOAuth(
-              await handleToken(
+              await (path === "/revoke" ? handleRevoke : handleToken)(
                 decodeBody(event),
                 headers["content-type"],
                 oauth,

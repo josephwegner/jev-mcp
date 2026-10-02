@@ -12,88 +12,22 @@ import {
   publicJwks,
   s256,
   sha256Hex,
-  type AuthCode,
-  type OAuthConfig,
 } from "../src/oauth.js";
 import { createHandler } from "../src/server.js";
 import { createVerifier } from "../src/auth.js";
 import type { JevClient } from "../src/jev.js";
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
 
+import { signerConfig, authorizeQuery } from "./oauth-fixture.js";
 const issuer = "https://mcp.example";
 const resource = `${issuer}/mcp`;
+const subject = "member";
 const password = "correct-horse";
 const passwordHash = sha256Hex(password);
-const subject = "member";
-
-function memoryStore() {
-  const codes = new Map<string, AuthCode>();
-  return {
-    async putCode(code: string, record: AuthCode) {
-      codes.set(code, record);
-    },
-    async takeCode(code: string) {
-      const record = codes.get(code);
-      codes.delete(code);
-      return record;
-    },
-    codes,
-  };
-}
-
-async function signerConfig(overrides: Partial<OAuthConfig> = {}) {
-  const { generateKeyPairSync } = await import("node:crypto");
-  const { privateKey, publicKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-  });
-  const spki = publicKey.export({ type: "spki", format: "der" }) as Buffer;
-  const jwk = await jwkFromSpki(spki, "test-key");
-  const store = memoryStore();
-  const config: OAuthConfig = {
-    issuer,
-    resource,
-    subjects: [subject],
-    passwordHash,
-    kid: "test-key",
-    async sign(signingInput: string) {
-      const { createSign } = await import("node:crypto");
-      const signer = createSign("RSA-SHA256");
-      signer.update(signingInput);
-      signer.end();
-      return signer.sign(privateKey);
-    },
-    async publicJwk() {
-      return jwk;
-    },
-    putCode: store.putCode,
-    takeCode: store.takeCode,
-    fetch: async () => {
-      throw new Error("unexpected fetch");
-    },
-    ...overrides,
-  };
-  return { config, store, jwk };
-}
-
-function challenge() {
-  const verifier = "a".repeat(43);
-  return { verifier, challenge: s256(verifier) };
-}
-
-function authorizeQuery(extra: Record<string, string> = {}) {
-  const { challenge: codeChallenge } = challenge();
-  return new URLSearchParams({
-    response_type: "code",
-    client_id: CHATGPT_CIMD,
-    redirect_uri: CHATGPT_REDIRECT,
-    code_challenge: extra.code_challenge || codeChallenge,
-    code_challenge_method: "S256",
-    state: "abc",
-    resource,
-    scope: "transactions:suggest",
-    ...extra,
-  }).toString();
-}
+const challenge = () => ({
+  verifier: "a".repeat(43),
+  challenge: s256("a".repeat(43)),
+});
 
 test("password hash comparison is exact and bounded", () => {
   assert.equal(passwordMatches(password, passwordHash), true);
@@ -336,4 +270,97 @@ test("SPKI conversion keeps kid and RS256 metadata", async () => {
   assert.equal(jwk.kid, "kms-kid");
   assert.equal(jwk.alg, "RS256");
   assert.equal(jwk.kty, "RSA");
+});
+
+test("expired codes, wrong bindings and removed membership cannot create refresh grants", async () => {
+  for (const change of [
+    "expired",
+    "client",
+    "redirect",
+    "resource",
+    "membership",
+  ]) {
+    let now = Date.now();
+    const { config } = await signerConfig({ now: () => now });
+    const auth = await handleAuthorize(
+      "POST",
+      "",
+      `${authorizeQuery()}&username=${subject}&password=${password}`,
+      "application/x-www-form-urlencoded",
+      config,
+    );
+    const code = new URL(auth.headers!.location).searchParams.get("code")!;
+    const params = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      code_verifier: challenge().verifier,
+      client_id: CHATGPT_CIMD,
+      redirect_uri: CHATGPT_REDIRECT,
+      resource,
+    });
+    if (change === "expired") now += 120000;
+    if (change === "client") params.set("client_id", "other");
+    if (change === "redirect") params.set("redirect_uri", "https://other");
+    if (change === "resource") params.set("resource", "https://other");
+    if (change === "membership") config.subjects = [];
+    assert.equal(
+      (
+        await handleToken(
+          params.toString(),
+          "application/x-www-form-urlencoded",
+          config,
+        )
+      ).statusCode,
+      400,
+    );
+  }
+});
+
+test("concurrent code exchanges mint exactly one refresh family", async () => {
+  const { config } = await signerConfig();
+  const auth = await handleAuthorize(
+    "POST",
+    "",
+    `${authorizeQuery()}&username=${subject}&password=${password}`,
+    "application/x-www-form-urlencoded",
+    config,
+  );
+  const code = new URL(auth.headers!.location).searchParams.get("code")!;
+  const params = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    code_verifier: challenge().verifier,
+    client_id: CHATGPT_CIMD,
+    redirect_uri: CHATGPT_REDIRECT,
+    resource,
+  });
+  const results = await Promise.all([
+    handleToken(params.toString(), "application/x-www-form-urlencoded", config),
+    handleToken(params.toString(), "application/x-www-form-urlencoded", config),
+  ]);
+  assert.deepEqual(results.map((r) => r.statusCode).sort(), [200, 400]);
+});
+
+test("authorization-code input cannot address refresh-store namespaces", async () => {
+  const { config } = await signerConfig({
+    takeCode: async () => {
+      throw new Error("must not touch storage");
+    },
+  });
+  for (const code of [
+    "family:known-id",
+    `refresh:${"a".repeat(64)}`,
+    "x".repeat(10000),
+  ]) {
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      code_verifier: challenge().verifier,
+    }).toString();
+    assert.equal(
+      (await handleToken(body, "application/x-www-form-urlencoded", config))
+        .statusCode,
+      400,
+    );
+  }
 });
