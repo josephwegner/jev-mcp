@@ -64,6 +64,7 @@ export interface OAuthConfig {
     sourceIp: string,
   ) => Promise<"created" | "rate_limited">;
   getClient: (clientId: string) => Promise<RegisteredClient | undefined>;
+  renewClient: (clientId: string) => Promise<void>;
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -293,6 +294,16 @@ async function allowedClient(
   );
 }
 
+async function renewAfterGrant(clientId: string, config: OAuthConfig): Promise<void> {
+  if (!clientId.startsWith("oc_")) return;
+  try {
+    await config.renewClient(clientId);
+  } catch {
+    // The grant is already committed. Keep its token response usable if
+    // extending the client's idle retention fails transiently.
+  }
+}
+
 export function authorizeForm(params: URLSearchParams): OAuthResult {
   const hidden = [
     "client_id",
@@ -475,6 +486,7 @@ export async function handleToken(
       config,
     );
     await config.refresh.create(grant);
+    await renewAfterGrant(clientId, config);
     return result;
   } catch {
     // Never expose SDK errors, request parameters, tokens, or signing inputs.
@@ -523,6 +535,7 @@ async function handleRefresh(
     await config.refresh.revoke(grant.id);
     return jsonError(400, "invalid_grant");
   }
+  await renewAfterGrant(clientId, config);
   return response;
 }
 

@@ -141,7 +141,7 @@ test("authorization code is consumed by one atomic delete with ALL_OLD", async (
   assert.equal(calls, 1);
 });
 
-test("registration has atomic daily quotas and active clients renew bounded idle retention", async () => {
+test("registration has atomic quotas and only explicit grant activity renews clients", async () => {
   const clientId = `oc_${"a".repeat(32)}`;
   const redirect = "http://127.0.0.1:8989/oauth/callback";
   let time = 1_800_000_000_000;
@@ -161,7 +161,9 @@ test("registration has atomic daily quotas and active clients renew bounded idle
       return {};
     }
     if (command instanceof UpdateItemCommand) {
-      assert.equal(command.input.ConditionExpression, "#expires > :now");
+      assert.equal(command.input.ConditionExpression, "#expires > :now AND #expires < :renewBefore");
+      if (expires >= Number(command.input.ExpressionAttributeValues?.[":renewBefore"].N))
+        throw { name: "ConditionalCheckFailedException" };
       expires = Number(command.input.ExpressionAttributeValues?.[":expires"].N);
       renewals++;
       return {};
@@ -175,9 +177,14 @@ test("registration has atomic daily quotas and active clients renew bounded idle
   assert.equal(await store.putClient(record, "127.0.0.1"), "created");
   assert.deepEqual(await store.getClient(clientId), record);
   assert.equal(renewals, 0);
+  await store.renewClient(clientId);
+  assert.equal(renewals, 0);
   time += 46 * 86_400_000;
   assert.deepEqual(await store.getClient(clientId), record);
+  assert.equal(renewals, 0);
+  await store.renewClient(clientId);
   assert.equal(renewals, 1);
+  assert.deepEqual(await store.getClient(clientId), record);
   time += 91 * 86_400_000;
   assert.equal(await store.getClient(clientId), undefined);
 });

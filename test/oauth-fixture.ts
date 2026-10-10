@@ -34,6 +34,7 @@ function memoryStore() {
       return "created" as const;
     },
     async getClient(clientId: string) { return clients.get(clientId); },
+    async renewClient() {},
     clients,
   };
 }
@@ -67,6 +68,7 @@ export async function signerConfig(overrides: Partial<OAuthConfig> = {}) {
     takeCode: store.takeCode,
     putClient: store.putClient,
     getClient: store.getClient,
+    renewClient: store.renewClient,
     fetch: async () => {
       throw new Error("unexpected fetch");
     },

@@ -70,6 +70,7 @@ export const handlerEntry: APIGatewayProxyHandlerV2 = async (
           takeCode: store.takeCode,
           putClient: clients.putClient,
           getClient: clients.getClient,
+          renewClient: clients.renewClient,
         },
         (entry) => console.error(JSON.stringify(entry)),
       );

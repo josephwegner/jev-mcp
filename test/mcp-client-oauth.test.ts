@@ -35,7 +35,8 @@ function event(path: string, method: string, body?: string, headers: Record<stri
 
 test("OpenClaw 2026.9.9 registration, login, MCP discovery and refresh", async () => {
   let now = Date.now();
-  const { config, jwk } = await signerConfig({ now: () => now });
+  let renewals = 0;
+  const { config, jwk } = await signerConfig({ now: () => now, renewClient: async () => { renewals++; } });
   const verify = createVerifier({ issuer, resource, subjects: ["member"], origins: [] }, createLocalJWKSet({ keys: [jwk] }));
   const handler = createHandler(
     { issuer, resource, subjects: ["member"], origins: [] }, verify,
@@ -52,8 +53,12 @@ test("OpenClaw 2026.9.9 registration, login, MCP discovery and refresh", async (
     resource, scope: SCOPE,
   });
   assert.equal((await handleAuthorize("GET", query.toString(), "", undefined, config)).statusCode, 200);
+  assert.equal(renewals, 0);
+  assert.equal((await handleAuthorize("POST", "", `${query}&username=member&password=wrong`, form, config)).statusCode, 400);
+  assert.equal(renewals, 0);
   const authorized = await handleAuthorize("POST", "", `${query}&username=member&password=correct-horse`, form, config);
   assert.equal(authorized.statusCode, 302);
+  assert.equal(renewals, 0);
   const callback = new URL(authorized.headers!.location);
   assert.equal(callback.origin + callback.pathname, redirect);
   const code = callback.searchParams.get("code")!;
@@ -61,7 +66,9 @@ test("OpenClaw 2026.9.9 registration, login, MCP discovery and refresh", async (
   const exchange = new URLSearchParams({ grant_type: "authorization_code", code, code_verifier: verifier, client_id: clientId, redirect_uri: redirect, resource });
   const tokens = await handleToken(exchange.toString(), form, config);
   assert.equal(tokens.statusCode, 200);
+  assert.equal(renewals, 1);
   assert.equal((await handleToken(exchange.toString(), form, config)).statusCode, 400);
+  assert.equal(renewals, 1);
   const body = tokens.body as { access_token: string; refresh_token: string };
   const mcpHeaders = { authorization: `Bearer ${body.access_token}`, "content-type": "application/json", accept: "application/json, text/event-stream" };
   const initialize = await handler(event("/mcp", "POST", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "OpenClaw", version: "2026.9.9" } } }), mcpHeaders));
@@ -72,8 +79,10 @@ test("OpenClaw 2026.9.9 registration, login, MCP discovery and refresh", async (
   const refresh = new URLSearchParams({ grant_type: "refresh_token", refresh_token: body.refresh_token, client_id: clientId, resource, scope: SCOPE });
   const rotated = await handleToken(refresh.toString(), form, config);
   assert.equal(rotated.statusCode, 200);
+  assert.equal(renewals, 2);
   await verify((rotated.body as { access_token: string }).access_token);
   assert.equal((await handleToken(refresh.toString(), form, config)).statusCode, 400);
+  assert.equal(renewals, 2);
 });
 
 test("registration and authorization reject unsafe or unregistered redirects and clients", async () => {

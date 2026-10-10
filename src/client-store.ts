@@ -116,31 +116,35 @@ export function dynamoClientStore(
         typeof redirectUris[0] !== "string"
       )
         return undefined;
-      if (Number(item.expires.N) < time + RENEW_WINDOW_MS) {
-        const expires = time + CLIENT_IDLE_MS;
-        try {
-          await client.send(
-            new UpdateItemCommand({
-              TableName: table,
-              Key: key,
-              UpdateExpression: "SET #expires = :expires, #ttl = :ttl",
-              ConditionExpression: "#expires > :now",
-              ExpressionAttributeNames: { "#expires": "expires", "#ttl": "ttl" },
-              ExpressionAttributeValues: {
-                ":expires": { N: String(expires) },
-                ":ttl": { N: String(Math.ceil(expires / 1000)) },
-                ":now": { N: String(time) },
-              },
-            }),
-            { abortSignal: abort() },
-          );
-        } catch (error) {
-          if ((error as { name?: string }).name === "ConditionalCheckFailedException")
-            return undefined;
-          throw error;
-        }
-      }
       return { clientId, redirectUris, scope: item.scope.S };
+    },
+
+    async renewClient(clientId: string): Promise<void> {
+      if (!/^oc_[A-Za-z0-9_-]{32}$/.test(clientId)) return;
+      const time = now();
+      const key = { pk: { S: `client:${clientId}` } };
+      const expires = time + CLIENT_IDLE_MS;
+      try {
+        await client.send(
+          new UpdateItemCommand({
+            TableName: table,
+            Key: key,
+            UpdateExpression: "SET #expires = :expires, #ttl = :ttl",
+            ConditionExpression: "#expires > :now AND #expires < :renewBefore",
+            ExpressionAttributeNames: { "#expires": "expires", "#ttl": "ttl" },
+            ExpressionAttributeValues: {
+              ":expires": { N: String(expires) },
+              ":ttl": { N: String(Math.ceil(expires / 1000)) },
+              ":now": { N: String(time) },
+              ":renewBefore": { N: String(time + RENEW_WINDOW_MS) },
+            },
+          }),
+          { abortSignal: abort() },
+        );
+      } catch (error) {
+        if ((error as { name?: string }).name === "ConditionalCheckFailedException") return;
+        throw error;
+      }
     },
   };
 }
