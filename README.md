@@ -74,7 +74,7 @@ Existing OAuth identity, audience, expiry, scope and membership checks are prese
 
 ## Authentication
 
-This app is both the MCP resource server and a minimal OAuth 2.1 authorization server for ChatGPT. There is no external IdP. The API module's JWT authorizer is unused so 401s can emit the RFC 9728 challenge. All `/mcp` methods require a JWT issued by this app. Missing, invalid or expired credentials receive 401; tokens lacking `transactions:suggest` or an allowlisted username receive 403.
+This app is both the MCP resource server and a minimal OAuth 2.1 authorization server for ChatGPT and OpenClaw. There is no external IdP. The API module's JWT authorizer is unused so 401s can emit the RFC 9728 challenge. All `/mcp` methods require a JWT issued by this app. Missing, invalid or expired credentials receive 401; tokens lacking `transactions:suggest` or an allowlisted username receive 403.
 
 Public, unauthenticated routes:
 
@@ -83,6 +83,7 @@ Public, unauthenticated routes:
 - `GET /.well-known/jwks.json`
 - `GET|POST /authorize`
 - `POST /token`
+- `POST /register`
 - `POST /revoke`
 
 Issuer and resource are `https://{apiId}.execute-api.{region}.amazonaws.com` and that origin plus `/mcp`. Tokens are RS256 via a dedicated KMS key. Authorization codes live in DynamoDB for 120 seconds and are single-use. PKCE S256 is required. ChatGPT's stable CIMD (`https://chatgpt.com/oauth/client.json`) and redirect (`https://chatgpt.com/connector_platform_oauth_redirect`) are allowlisted; callback-id CIMD URLs under `https://chatgpt.com/oauth/` are matched locally to the same callback ID in the redirect.
@@ -91,15 +92,35 @@ Authorization-code exchange also issues a rotating opaque refresh token. Refresh
 
 Set `allowed_subjects` to the username(s) that may sign in. Set `oauth_password_hash` to `printf '%s' 'your-password' | shasum -a 256`. After deploy, paste `mcp_url` into ChatGPT. The first connect opens `/authorize`; sign in with that username and password.
 
+### OpenClaw 2026.9.9
+
+[OpenClaw's MCP OAuth provider](https://github.com/openclaw/openclaw/blob/v2026.9.9/src/agents/mcp-oauth-provider.ts) registers a public client with `token_endpoint_auth_method: "none"`, code and refresh grants, and one loopback callback. Its default callback is `http://127.0.0.1:8989/oauth/callback`. `/register` accepts that request and returns a client ID. Registration accepts a single canonical `http` loopback callback (`127.0.0.1`, `localhost`, or `[::1]` with an explicit port and `/oauth/callback` path), and only the existing `transactions:suggest` scope. Authorization requires the registered client ID and exact callback; codes and refresh grants keep the client, resource, scope, and allowlisted username bindings. ChatGPT's existing CIMD paths remain available.
+
+Registration is limited to 10 successful clients per source IP and 100 total per UTC day. The limits are checked atomically with client creation; excess requests receive HTTP 429. Client records expire after 90 days without a successful authorization-code exchange or refresh grant. Successful grants renew the expiry when fewer than 45 days remain; viewing the authorization page does not renew it. The existing API Gateway throttle still applies to every request. If an inactive OpenClaw client ID expires, run `openclaw mcp logout jev-mcp` to clear its saved OAuth state, then `openclaw mcp login jev-mcp` to register again.
+
+After an authorized operator deploys the Terraform route and Lambda code, configure OpenClaw with the Terraform `mcp_url` output (which ends in `/mcp`):
+
+```sh
+openclaw mcp set jev-mcp '{"url":"https://<api-id>.execute-api.<region>.amazonaws.com/mcp","transport":"streamable-http","auth":"oauth","oauth":{"scope":"transactions:suggest"}}'
+openclaw mcp login jev-mcp
+openclaw mcp status --verbose
+openclaw mcp doctor jev-mcp --probe
+openclaw mcp probe jev-mcp
+```
+
+Login prints an authorization URL and starts OpenClaw's loopback callback listener. Open it in a browser on the same machine, sign in with an `allowed_subjects` username and the configured OAuth password, and let OpenClaw exchange the code. `doctor --probe` or `probe` should initialize the connection and list `evaluate_state` without calling Jev. To verify live refresh, repeat a probe after the access token's one-hour lifetime; OpenClaw should refresh automatically. The automated suite simulates expiry and checks rotation without waiting. This code change does not deploy the Terraform route or Lambda.
+
 Canonical resource uses API Gateway's trusted `requestContext.apiId` and Lambda's AWS region, never Host headers. Only the default execute-api endpoint is supported. An Origin header is rejected unless listed in `allowed_origins`. Verification failures fail closed.
 
 ## Secret and infrastructure setup (operator actions, not performed)
 
 1. Obtain tenant/account/state settings from the platform operator. Replace placeholders in `app.config.json`; retain the tenant-specific state prefix and state role. Set the same app/environment/region/account values in ignored `terraform/terraform.tfvars`, using the example. The frontend fields exist only for deploy CLI compatibility; do not run frontend deployment.
-2. In the workload account/region, the user creates/populates a Secrets Manager secret themselves through the AWS console. Store the Jev API key as the **raw plaintext SecretString**, not JSON. Supply only its exact ARN as `jev_secret_arn`. No secret resource version or secret-value data source exists in Terraform. For a customer-managed KMS key, supply its exact ARN and ensure its existing policy permits this Lambda role. Default AWS-managed encryption needs no explicit KMS permission here.
+2. In the workload account/region, the user creates/populates a Secrets Manager secret themselves through the AWS console. Store the Jev API key as the **raw plaintext SecretString**, not JSON. Supply only its exact ARN as `jev_secret_arn`. No secret resource version or secret-value data source exists in Terraform. For a customer-managed KMS key for that secret, supply its exact ARN and ensure its existing policy permits this Lambda role. Default AWS-managed encryption needs no explicit KMS permission here. Terraform manages the separate RSA OAuth signing key and its alias.
 3. Set `allowed_subjects` and `oauth_password_hash` in `terraform.tfvars`. The hash is a SHA-256 hex digest, not the password.
 4. With a workload SSO session, follow the Family-PaaS workflow: `npm run deploy:seed`, `npm run terraform:init`, then review a Terraform plan and explicitly approve/apply it. Seeding uploads `jev-mcp/prod/mcp.zip` before Lambda creation. Use only `npm run deploy:lambdas` for later code updates; use Terraform for configuration changes. The deploy CLI validates the selected workload account before mutations.
 5. Read `terraform output -raw mcp_url` and connect that URL in ChatGPT. Complete the browser login once, then verify initialize/list before a paid tools/call.
+
+For an existing deployment, keep `aws_kms_key.oauth` and `aws_kms_alias.oauth` at their current Terraform state addresses. Remove any `oauth_kms_key_arn` line added to local `terraform.tfvars` during preparation for this PR. Before applying the Terraform plan, confirm it shows **no destroy or replacement** of the OAuth key or alias and no change to the Lambda `OAUTH_KMS_KEY_ID` value. If either resource is absent from state or the plan proposes a different signing key, stop and reconcile state with the deployed key before applying. Keeping the same key preserves JWKS verification of existing access tokens and the signing identity for new tokens. New installations create the managed key and alias on their initial Terraform apply.
 
 Infrastructure pins Family-PaaS `a59d41e0469d1a1336110fa2d6e46ee07f2eb168`. The runtime role can read the exact Jev secret, sign/get-public-key on the OAuth KMS key, read/write/delete authorization codes, and write its own log streams. The password hash is an environment variable (not recoverable as the password). The Jev API key never enters Terraform state or outputs. Jev key retrieval is lazy, cached for 5 minutes, with a 3-second timeout and one attempt.
 

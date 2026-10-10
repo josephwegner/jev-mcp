@@ -6,6 +6,7 @@ import {
   s256,
   sha256Hex,
   type AuthCode,
+  type RegisteredClient,
   type OAuthConfig,
 } from "../src/oauth.js";
 const issuer = "https://mcp.example";
@@ -16,6 +17,7 @@ const subject = "member";
 
 function memoryStore() {
   const codes = new Map<string, AuthCode>();
+  const clients = new Map<string, RegisteredClient>();
   return {
     async putCode(code: string, record: AuthCode) {
       codes.set(code, record);
@@ -26,6 +28,14 @@ function memoryStore() {
       return record;
     },
     codes,
+    async putClient(client: RegisteredClient) {
+      if (clients.has(client.clientId)) throw new Error("duplicate client ID");
+      clients.set(client.clientId, client);
+      return "created" as const;
+    },
+    async getClient(clientId: string) { return clients.get(clientId); },
+    async renewClient() {},
+    clients,
   };
 }
 
@@ -56,6 +66,9 @@ export async function signerConfig(overrides: Partial<OAuthConfig> = {}) {
     },
     putCode: store.putCode,
     takeCode: store.takeCode,
+    putClient: store.putClient,
+    getClient: store.getClient,
+    renewClient: store.renewClient,
     fetch: async () => {
       throw new Error("unexpected fetch");
     },

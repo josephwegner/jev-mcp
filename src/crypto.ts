@@ -32,6 +32,7 @@ export function dynamoCodeStore(
             resource: { S: record.resource },
             subject: { S: record.subject },
             clientId: { S: record.clientId },
+            scope: { S: record.scope },
             expires: { N: String(record.expires) },
             ttl: { N: String(Math.floor(Date.now() / 1000) + ttlSeconds) },
           },
@@ -58,6 +59,7 @@ export function dynamoCodeStore(
         !item.resource?.S ||
         !item.subject?.S ||
         !item.clientId?.S ||
+        !item.scope?.S ||
         !item.expires?.N
       ) {
         return undefined;
@@ -69,6 +71,7 @@ export function dynamoCodeStore(
         resource: item.resource.S,
         subject: item.subject.S,
         clientId: item.clientId.S,
+        scope: item.scope.S,
         expires: Number(item.expires.N),
       };
     },

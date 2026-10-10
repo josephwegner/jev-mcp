@@ -11,6 +11,7 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { dynamoRefreshStore } from "../src/refresh-store.js";
 import { dynamoCodeStore } from "../src/crypto.js";
+import { dynamoClientStore } from "../src/client-store.js";
 import type { RefreshGrant } from "../src/refresh.js";
 const grant: RefreshGrant = {
   id: "family-id",
@@ -138,6 +139,66 @@ test("authorization code is consumed by one atomic delete with ALL_OLD", async (
   );
   assert.equal(await store.takeCode("code"), undefined);
   assert.equal(calls, 1);
+});
+
+test("registration has atomic quotas and only explicit grant activity renews clients", async () => {
+  const clientId = `oc_${"a".repeat(32)}`;
+  const redirect = "http://127.0.0.1:8989/oauth/callback";
+  let time = 1_800_000_000_000;
+  let expires = 0;
+  let renewals = 0;
+  const store = dynamoClientStore("table", mockClient((command) => {
+    if (command instanceof TransactWriteItemsCommand) {
+      const [ip, global, client] = command.input.TransactItems!;
+      assert.match(ip.Update?.Key?.pk.S || "", /^registration:ip:\d+:[a-f0-9]{64}$/);
+      assert.match(global.Update?.Key?.pk.S || "", /^registration:global:\d+$/);
+      assert.equal(ip.Update?.ExpressionAttributeValues?.[":max"].N, "10");
+      assert.equal(global.Update?.ExpressionAttributeValues?.[":max"].N, "100");
+      assert.equal(client.Put?.Item?.pk.S, `client:${clientId}`);
+      assert.equal(client.Put?.ConditionExpression, "attribute_not_exists(pk)");
+      expires = Number(client.Put?.Item?.expires.N);
+      assert.equal(client.Put?.Item?.ttl.N, String(Math.ceil(expires / 1000)));
+      return {};
+    }
+    if (command instanceof UpdateItemCommand) {
+      assert.equal(command.input.ConditionExpression, "#expires > :now AND #expires < :renewBefore");
+      if (expires >= Number(command.input.ExpressionAttributeValues?.[":renewBefore"].N))
+        throw { name: "ConditionalCheckFailedException" };
+      expires = Number(command.input.ExpressionAttributeValues?.[":expires"].N);
+      renewals++;
+      return {};
+    }
+    assert.ok(command instanceof GetItemCommand);
+    assert.equal(command.input.Key?.pk.S, `client:${clientId}`);
+    assert.equal(command.input.ConsistentRead, true);
+    return { Item: { redirectUris: { S: JSON.stringify([redirect]) }, scope: { S: "transactions:suggest" }, expires: { N: String(expires) } } };
+  }), () => time);
+  const record = { clientId, redirectUris: [redirect], scope: "transactions:suggest" };
+  assert.equal(await store.putClient(record, "127.0.0.1"), "created");
+  assert.deepEqual(await store.getClient(clientId), record);
+  assert.equal(renewals, 0);
+  await store.renewClient(clientId);
+  assert.equal(renewals, 0);
+  time += 46 * 86_400_000;
+  assert.deepEqual(await store.getClient(clientId), record);
+  assert.equal(renewals, 0);
+  await store.renewClient(clientId);
+  assert.equal(renewals, 1);
+  assert.deepEqual(await store.getClient(clientId), record);
+  time += 91 * 86_400_000;
+  assert.equal(await store.getClient(clientId), undefined);
+});
+
+test("registration quota rejection is distinct from storage failure", async () => {
+  const record = { clientId: `oc_${"a".repeat(32)}`, redirectUris: ["http://127.0.0.1:8989/oauth/callback"], scope: "transactions:suggest" };
+  const limit = dynamoClientStore("table", mockClient(() => {
+    throw { name: "TransactionCanceledException", CancellationReasons: [{ Code: "ConditionalCheckFailed" }] };
+  }));
+  assert.equal(await limit.putClient(record, "127.0.0.1"), "rate_limited");
+  const failed = dynamoClientStore("table", mockClient(() => {
+    throw { name: "AccessDeniedException" };
+  }));
+  await assert.rejects(failed.putClient(record, "127.0.0.1"));
 });
 
 test("malformed stored deadlines fail closed", async () => {

@@ -115,6 +115,7 @@ module "api" {
     "GET /authorize",
     "POST /authorize",
     "POST /token",
+    "POST /register",
     "POST /revoke",
     ] : {
     route_key     = route
