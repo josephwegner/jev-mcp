@@ -90,6 +90,16 @@ test("registration and authorization reject unsafe or unregistered redirects and
   assert.equal((await handleAuthorize("GET", query.toString(), "", undefined, config)).statusCode, 400);
 });
 
+test("registration quota returns 429 without storing a client", async () => {
+  const { config, store } = await signerConfig({
+    putClient: async () => "rate_limited",
+  });
+  const response = await handleRegister(JSON.stringify(metadata), "application/json", config, "127.0.0.1");
+  assert.equal(response.statusCode, 429);
+  assert.equal(response.headers?.["retry-after"], "86400");
+  assert.equal(store.clients.size, 0);
+});
+
 test("OpenClaw codes and refresh grants reject client, resource, scope and removed user misuse", async () => {
   for (const mutation of ["client", "redirect", "resource", "scope", "user"] as const) {
     const { config } = await signerConfig();

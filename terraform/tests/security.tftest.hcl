@@ -11,10 +11,17 @@ variables {
   allowed_subjects    = ["member"]
   oauth_password_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   jev_secret_arn      = "arn:aws:secretsmanager:us-east-1:111122223333:secret:jev-ABCDEF"
-  oauth_kms_key_arn   = "arn:aws:kms:us-east-1:111122223333:key/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 }
 run "security_configuration" {
   command = plan
+  assert {
+    condition     = aws_kms_key.oauth.key_usage == "SIGN_VERIFY" && aws_kms_key.oauth.customer_master_key_spec == "RSA_2048"
+    error_message = "The existing Terraform-managed OAuth signing key must be retained."
+  }
+  assert {
+    condition     = aws_kms_alias.oauth.name == "alias/jev-mcp-oauth-prod"
+    error_message = "The existing OAuth key alias must be retained."
+  }
   assert {
     condition     = aws_dynamodb_table.oauth_codes.hash_key == "pk"
     error_message = "Authorization codes use a single partition key."
@@ -28,13 +35,6 @@ run "reject_cross_account_secret" {
   command = plan
   variables {
     jev_secret_arn = "arn:aws:secretsmanager:us-east-1:999988887777:secret:jev-ABCDEF"
-  }
-  expect_failures = [aws_iam_role_policy.runtime]
-}
-run "reject_cross_account_oauth_key" {
-  command = plan
-  variables {
-    oauth_kms_key_arn = "arn:aws:kms:us-east-1:999988887777:key/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
   }
   expect_failures = [aws_iam_role_policy.runtime]
 }
@@ -64,5 +64,11 @@ run "refresh_permissions" {
       contains(statement.Action, "dynamodb:UpdateItem") && statement.Resource == aws_dynamodb_table.oauth_codes.arn
     ])
     error_message = "Refresh rotation/revocation requires UpdateItem scoped to the OAuth table."
+  }
+  assert {
+    condition = anytrue([for statement in jsondecode(aws_iam_role_policy.runtime.policy).Statement :
+      contains(statement.Action, "kms:Sign") && statement.Resource == aws_kms_key.oauth.arn
+    ])
+    error_message = "Signing must continue with the existing Terraform-managed key."
   }
 }

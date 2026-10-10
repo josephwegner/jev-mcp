@@ -29,9 +29,9 @@ function memoryStore() {
     },
     codes,
     async putClient(client: RegisteredClient) {
-      if (clients.has(client.clientId)) return false;
+      if (clients.has(client.clientId)) throw new Error("duplicate client ID");
       clients.set(client.clientId, client);
-      return true;
+      return "created" as const;
     },
     async getClient(clientId: string) { return clients.get(clientId); },
     clients,

@@ -54,14 +54,6 @@ variable "jev_kms_key_arn" {
   type        = string
   default     = null
 }
-variable "oauth_kms_key_arn" {
-  description = "Existing workload-local KMS signing key ARN (RSA_2048 SIGN_VERIFY). Created outside Terraform."
-  type        = string
-  validation {
-    condition     = can(regex("^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[0-9a-f-]+$", var.oauth_kms_key_arn))
-    error_message = "Supply one exact KMS key ARN in this workload account."
-  }
-}
 variable "jev_model" {
   type    = string
   default = "jev-latest"

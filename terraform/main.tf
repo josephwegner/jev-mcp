@@ -13,6 +13,18 @@ check "workload_account" {
   }
 }
 
+resource "aws_kms_key" "oauth" {
+  description              = "${var.app_name} OAuth signing key"
+  key_usage                = "SIGN_VERIFY"
+  customer_master_key_spec = "RSA_2048"
+  deletion_window_in_days  = 7
+}
+
+resource "aws_kms_alias" "oauth" {
+  name          = "alias/${var.app_name}-oauth-${var.environment}"
+  target_key_id = aws_kms_key.oauth.key_id
+}
+
 resource "aws_dynamodb_table" "oauth_codes" {
   name         = "${var.app_name}-oauth-codes-${var.environment}"
   billing_mode = "PAY_PER_REQUEST"
@@ -51,16 +63,16 @@ resource "aws_iam_role_policy" "runtime" {
     Statement = concat([
       { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = var.jev_secret_arn },
       { Effect = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"], Resource = "arn:aws:logs:${var.region}:${var.workload_account_id}:log-group:/aws/lambda/${var.app_name}-mcp-${var.environment}:*" },
-      { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"], Resource = aws_dynamodb_table.oauth_codes.arn },
-      { Effect = "Allow", Action = ["kms:Sign", "kms:GetPublicKey"], Resource = var.oauth_kms_key_arn }
+      { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:UpdateItem"], Resource = aws_dynamodb_table.oauth_codes.arn },
+      { Effect = "Allow", Action = ["kms:Sign", "kms:GetPublicKey"], Resource = aws_kms_key.oauth.arn }
       ], var.jev_kms_key_arn == null ? [] : [
       { Effect = "Allow", Action = ["kms:Decrypt"], Resource = var.jev_kms_key_arn, Condition = { StringEquals = { "kms:ViaService" = "secretsmanager.${var.region}.amazonaws.com", "kms:EncryptionContext:SecretARN" = var.jev_secret_arn } } }
     ])
   })
   lifecycle {
     precondition {
-      condition     = startswith(var.jev_secret_arn, "arn:aws:secretsmanager:${var.region}:${var.workload_account_id}:secret:") && startswith(var.oauth_kms_key_arn, "arn:aws:kms:${var.region}:${var.workload_account_id}:key/")
-      error_message = "Secret and OAuth KMS key must belong to this workload account and region."
+      condition     = startswith(var.jev_secret_arn, "arn:aws:secretsmanager:${var.region}:${var.workload_account_id}:secret:")
+      error_message = "Secret must belong to this workload account and region."
     }
   }
 }
@@ -80,7 +92,7 @@ module "mcp" {
     ALLOWED_SUBJECTS    = jsonencode(var.allowed_subjects)
     ALLOWED_ORIGINS     = jsonencode(var.allowed_origins)
     OAUTH_PASSWORD_HASH = var.oauth_password_hash
-    OAUTH_KMS_KEY_ID    = var.oauth_kms_key_arn
+    OAUTH_KMS_KEY_ID    = aws_kms_key.oauth.arn
     OAUTH_CODE_TABLE    = aws_dynamodb_table.oauth_codes.name
     JEV_SECRET_ARN      = var.jev_secret_arn
     JEV_MODEL           = var.jev_model

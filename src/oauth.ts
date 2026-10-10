@@ -59,7 +59,10 @@ export interface OAuthConfig {
     ttlSeconds: number,
   ) => Promise<void>;
   takeCode: (code: string) => Promise<AuthCode | undefined>;
-  putClient: (client: RegisteredClient) => Promise<boolean>;
+  putClient: (
+    client: RegisteredClient,
+    sourceIp: string,
+  ) => Promise<"created" | "rate_limited">;
   getClient: (clientId: string) => Promise<RegisteredClient | undefined>;
   fetch?: typeof fetch;
   now?: () => number;
@@ -114,6 +117,7 @@ export async function handleRegister(
   rawBody: string,
   contentType: string | undefined,
   config: OAuthConfig,
+  sourceIp = "",
 ): Promise<OAuthResult> {
   if (
     !(contentType || "").toLowerCase().startsWith("application/json") ||
@@ -147,8 +151,15 @@ export async function handleRegister(
     scope: SCOPE,
   };
   try {
-    if (!(await config.putClient(client)))
-      return jsonError(503, "temporarily_unavailable");
+    if ((await config.putClient(client, sourceIp)) === "rate_limited")
+      return {
+        ...jsonError(429, "slow_down"),
+        headers: {
+          "content-type": "application/json",
+          "cache-control": "no-store",
+          "retry-after": "86400",
+        },
+      };
   } catch {
     return jsonError(503, "temporarily_unavailable");
   }

@@ -106,7 +106,7 @@ export function createHandler(
       }
       if (path === "/register") {
         return method === "POST"
-          ? fromOAuth(await handleRegister(decodeBody(event), headers["content-type"], oauth))
+          ? fromOAuth(await handleRegister(decodeBody(event), headers["content-type"], oauth, event.requestContext.http.sourceIp))
           : reply(405, undefined, { allow: "POST" });
       }
       if (path === "/authorize") {
