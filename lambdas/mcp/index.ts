@@ -1,6 +1,7 @@
 import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { createVerifier, type AuthConfig } from "../../src/auth.js";
 import { dynamoCodeStore, kmsSigner } from "../../src/crypto.js";
+import { dynamoClientStore } from "../../src/client-store.js";
 import { dynamoRefreshStore } from "../../src/refresh-store.js";
 import { createJevClient } from "../../src/jev.js";
 import { secretLoader } from "../../src/secret.js";
@@ -47,6 +48,7 @@ export const handlerEntry: APIGatewayProxyHandlerV2 = async (
       };
       const signer = kmsSigner(required("OAUTH_KMS_KEY_ID"));
       const store = dynamoCodeStore(required("OAUTH_CODE_TABLE"));
+      const clients = dynamoClientStore(required("OAUTH_CODE_TABLE"));
       const client = createJevClient(
         required("JEV_MODEL"),
         secretLoader(required("JEV_SECRET_ARN")),
@@ -66,6 +68,8 @@ export const handlerEntry: APIGatewayProxyHandlerV2 = async (
           refresh: dynamoRefreshStore(required("OAUTH_CODE_TABLE")),
           putCode: store.putCode,
           takeCode: store.takeCode,
+          putClient: clients.putClient,
+          getClient: clients.getClient,
         },
         (entry) => console.error(JSON.stringify(entry)),
       );

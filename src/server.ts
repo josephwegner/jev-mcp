@@ -23,6 +23,7 @@ import {
   handleAuthorize,
   handleToken,
   handleRevoke,
+  handleRegister,
   publicJwks,
   type OAuthConfig,
   type OAuthResult,
@@ -102,6 +103,11 @@ export function createHandler(
         return method === "GET"
           ? reply(200, await publicJwks(oauth.publicJwk))
           : reply(405, undefined, { allow: "GET" });
+      }
+      if (path === "/register") {
+        return method === "POST"
+          ? fromOAuth(await handleRegister(decodeBody(event), headers["content-type"], oauth))
+          : reply(405, undefined, { allow: "POST" });
       }
       if (path === "/authorize") {
         return fromOAuth(

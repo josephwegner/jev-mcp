@@ -74,7 +74,7 @@ Existing OAuth identity, audience, expiry, scope and membership checks are prese
 
 ## Authentication
 
-This app is both the MCP resource server and a minimal OAuth 2.1 authorization server for ChatGPT. There is no external IdP. The API module's JWT authorizer is unused so 401s can emit the RFC 9728 challenge. All `/mcp` methods require a JWT issued by this app. Missing, invalid or expired credentials receive 401; tokens lacking `transactions:suggest` or an allowlisted username receive 403.
+This app is both the MCP resource server and a minimal OAuth 2.1 authorization server for ChatGPT and OpenClaw. There is no external IdP. The API module's JWT authorizer is unused so 401s can emit the RFC 9728 challenge. All `/mcp` methods require a JWT issued by this app. Missing, invalid or expired credentials receive 401; tokens lacking `transactions:suggest` or an allowlisted username receive 403.
 
 Public, unauthenticated routes:
 
@@ -83,6 +83,7 @@ Public, unauthenticated routes:
 - `GET /.well-known/jwks.json`
 - `GET|POST /authorize`
 - `POST /token`
+- `POST /register`
 - `POST /revoke`
 
 Issuer and resource are `https://{apiId}.execute-api.{region}.amazonaws.com` and that origin plus `/mcp`. Tokens are RS256 via a dedicated KMS key. Authorization codes live in DynamoDB for 120 seconds and are single-use. PKCE S256 is required. ChatGPT's stable CIMD (`https://chatgpt.com/oauth/client.json`) and redirect (`https://chatgpt.com/connector_platform_oauth_redirect`) are allowlisted; callback-id CIMD URLs under `https://chatgpt.com/oauth/` are matched locally to the same callback ID in the redirect.
@@ -90,6 +91,22 @@ Issuer and resource are `https://{apiId}.execute-api.{region}.amazonaws.com` and
 Authorization-code exchange also issues a rotating opaque refresh token. Refresh grants expire after 30 days or seven idle days, recheck configured membership, and revoke the entire family on reuse. `/revoke` revokes refresh grants; existing access JWTs expire normally. This rollout requires Terraform IAM/API changes before Lambda deployment; see [refresh security, verification and rollout](docs/oauth-refresh-verification.md).
 
 Set `allowed_subjects` to the username(s) that may sign in. Set `oauth_password_hash` to `printf '%s' 'your-password' | shasum -a 256`. After deploy, paste `mcp_url` into ChatGPT. The first connect opens `/authorize`; sign in with that username and password.
+
+### OpenClaw 2026.9.9
+
+[OpenClaw's MCP OAuth provider](https://github.com/openclaw/openclaw/blob/v2026.9.9/src/agents/mcp-oauth-provider.ts) registers a public client with `token_endpoint_auth_method: "none"`, code and refresh grants, and one loopback callback. Its default callback is `http://127.0.0.1:8989/oauth/callback`. `/register` accepts that request and returns a durable client ID. Registration accepts a single canonical `http` loopback callback (`127.0.0.1`, `localhost`, or `[::1]` with an explicit port and `/oauth/callback` path), and only the existing `transactions:suggest` scope. Authorization requires the registered client ID and exact callback; codes and refresh grants keep the client, resource, scope, and allowlisted username bindings. ChatGPT's existing CIMD paths remain available.
+
+After an authorized operator deploys the Terraform route and Lambda code, configure OpenClaw with the Terraform `mcp_url` output (which ends in `/mcp`):
+
+```sh
+openclaw mcp set jev-mcp '{"url":"https://<api-id>.execute-api.<region>.amazonaws.com/mcp","transport":"streamable-http","auth":"oauth","oauth":{"scope":"transactions:suggest"}}'
+openclaw mcp login jev-mcp
+openclaw mcp status --verbose
+openclaw mcp doctor jev-mcp --probe
+openclaw mcp probe jev-mcp
+```
+
+Login prints an authorization URL and starts OpenClaw's loopback callback listener. Open it in a browser on the same machine, sign in with an `allowed_subjects` username and the configured OAuth password, and let OpenClaw exchange the code. `doctor --probe` or `probe` should initialize the connection and list `evaluate_state` without calling Jev. To verify live refresh, repeat a probe after the access token's one-hour lifetime; OpenClaw should refresh automatically. The automated suite simulates expiry and checks rotation without waiting. This code change does not deploy the Terraform route or Lambda.
 
 Canonical resource uses API Gateway's trusted `requestContext.apiId` and Lambda's AWS region, never Host headers. Only the default execute-api endpoint is supported. An Origin header is rejected unless listed in `allowed_origins`. Verification failures fail closed.
 

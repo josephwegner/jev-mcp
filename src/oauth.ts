@@ -34,7 +34,14 @@ export interface AuthCode {
   resource: string;
   subject: string;
   clientId: string;
+  scope: string;
   expires: number;
+}
+
+export interface RegisteredClient {
+  clientId: string;
+  redirectUris: string[];
+  scope: string;
 }
 
 export interface OAuthConfig {
@@ -52,6 +59,8 @@ export interface OAuthConfig {
     ttlSeconds: number,
   ) => Promise<void>;
   takeCode: (code: string) => Promise<AuthCode | undefined>;
+  putClient: (client: RegisteredClient) => Promise<boolean>;
+  getClient: (clientId: string) => Promise<RegisteredClient | undefined>;
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -67,6 +76,7 @@ export function authorizationServerMetadata(issuer: string) {
     issuer,
     authorization_endpoint: `${issuer}/authorize`,
     token_endpoint: `${issuer}/token`,
+    registration_endpoint: `${issuer}/register`,
     jwks_uri: `${issuer}/.well-known/jwks.json`,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],
@@ -77,6 +87,83 @@ export function authorizationServerMetadata(issuer: string) {
     scopes_supported: [SCOPE],
     client_id_metadata_document_supported: true,
     authorization_response_iss_parameter_supported: true,
+  };
+}
+
+function validRedirect(uri: unknown): uri is string {
+  if (typeof uri !== "string" || uri.length > 512) return false;
+  try {
+    const url = new URL(uri);
+    return (
+      url.protocol === "http:" &&
+      ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) &&
+      url.port !== "" &&
+      url.pathname === "/oauth/callback" &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      url.toString() === uri
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function handleRegister(
+  rawBody: string,
+  contentType: string | undefined,
+  config: OAuthConfig,
+): Promise<OAuthResult> {
+  if (
+    !(contentType || "").toLowerCase().startsWith("application/json") ||
+    Buffer.byteLength(rawBody) > 8192
+  )
+    return jsonError(400, "invalid_client_metadata");
+  let input: unknown;
+  try {
+    input = JSON.parse(rawBody);
+  } catch {
+    return jsonError(400, "invalid_client_metadata");
+  }
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    return jsonError(400, "invalid_client_metadata");
+  const data = input as Record<string, unknown>;
+  const redirects = data.redirect_uris;
+  if (
+    !Array.isArray(redirects) ||
+    redirects.length !== 1 ||
+    !validRedirect(redirects[0]) ||
+    data.token_endpoint_auth_method !== "none" ||
+    JSON.stringify(data.grant_types) !==
+      JSON.stringify(["authorization_code", "refresh_token"]) ||
+    JSON.stringify(data.response_types) !== JSON.stringify(["code"]) ||
+    (data.scope !== undefined && data.scope !== SCOPE)
+  )
+    return jsonError(400, "invalid_client_metadata");
+  const client: RegisteredClient = {
+    clientId: `oc_${randomBytes(24).toString("base64url")}`,
+    redirectUris: [redirects[0]],
+    scope: SCOPE,
+  };
+  try {
+    if (!(await config.putClient(client)))
+      return jsonError(503, "temporarily_unavailable");
+  } catch {
+    return jsonError(503, "temporarily_unavailable");
+  }
+  return {
+    statusCode: 201,
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
+    body: {
+      client_id: client.clientId,
+      client_id_issued_at: Math.floor((config.now || Date.now)() / 1000),
+      redirect_uris: client.redirectUris,
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+      scope: client.scope,
+    },
   };
 }
 
@@ -173,6 +260,7 @@ function redirectWith(
 async function allowedClient(
   clientId: string,
   redirect: string,
+  config: OAuthConfig,
 ): Promise<boolean> {
   if (clientId === CHATGPT_CIMD && redirect === CHATGPT_REDIRECT) return true;
 
@@ -183,8 +271,14 @@ async function allowedClient(
     /^https:\/\/chatgpt\.com\/oauth\/([^/]+)\/client\.json$/.exec(clientId);
   const redirectMatch =
     /^https:\/\/chatgpt\.com\/connector\/oauth\/([^/]+)$/.exec(redirect);
+  if (clientMatch && redirectMatch && clientMatch[1] === redirectMatch[1])
+    return true;
+  if (!/^oc_[A-Za-z0-9_-]{32}$/.test(clientId)) return false;
+  const client = await config.getClient(clientId);
   return Boolean(
-    clientMatch && redirectMatch && clientMatch[1] === redirectMatch[1],
+    client?.clientId === clientId &&
+      client.scope === SCOPE &&
+      client.redirectUris.includes(redirect),
   );
 }
 
@@ -258,7 +352,15 @@ export async function handleAuthorize(
   if (resource !== config.resource || !scope.split(/\s+/).includes(SCOPE)) {
     return errorPage("Invalid resource or scope");
   }
-  if (!(await allowedClient(clientId, redirect))) {
+  if (clientId.startsWith("oc_") && scope !== SCOPE)
+    return errorPage("Invalid resource or scope");
+  let clientAllowed = false;
+  try {
+    clientAllowed = await allowedClient(clientId, redirect, config);
+  } catch {
+    return errorPage("Authorization unavailable");
+  }
+  if (!clientAllowed) {
     return errorPage("Unknown client");
   }
   if (method === "GET") return authorizeForm(params);
@@ -288,6 +390,7 @@ export async function handleAuthorize(
       resource,
       subject: username,
       clientId,
+      scope: SCOPE,
       expires: now + CODE_TTL_MS,
     },
     120,
@@ -333,11 +436,13 @@ export async function handleToken(
       record.expires > now &&
       record.redirect === redirect &&
       record.clientId === clientId &&
+      record.scope === SCOPE &&
       record.resource === resource &&
       resource === config.resource &&
       config.subjects.includes(record.subject) &&
       s256(verifier) === record.challenge;
     if (!grantOk || !record) return jsonError(400, "invalid_grant");
+    if (!(await allowedClient(clientId, redirect, config))) return jsonError(400, "invalid_grant");
 
     const refreshToken = newRefreshToken();
     const grant: RefreshGrant = {
@@ -385,6 +490,11 @@ async function handleRefresh(
     (params.has("resource") && params.get("resource") !== grant.resource)
   )
     return jsonError(400, "invalid_grant");
+  if (clientId.startsWith("oc_")) {
+    const client = await config.getClient(clientId);
+    if (!client || client.clientId !== clientId || client.scope !== grant.scope)
+      return jsonError(400, "invalid_grant");
+  }
   if (params.has("scope") && params.get("scope") !== grant.scope)
     return jsonError(400, "invalid_scope");
   const now = (config.now || Date.now)();

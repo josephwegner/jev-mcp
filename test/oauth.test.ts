@@ -127,6 +127,18 @@ test("authorize accepts a matched callback-specific ChatGPT client", async () =>
   assert.equal(mismatched.statusCode, 400);
 });
 
+test("ChatGPT authorization continues to accept requests containing the legacy scope", async () => {
+  const { config } = await signerConfig();
+  const response = await handleAuthorize(
+    "GET",
+    authorizeQuery({ scope: "openid transactions:suggest" }),
+    "",
+    undefined,
+    config,
+  );
+  assert.equal(response.statusCode, 200);
+});
+
 test("token exchange consumes the code, checks PKCE, and issues a resource-bound JWT", async () => {
   const { config, store, jwk } = await signerConfig();
   const { verifier, challenge: codeChallenge } = challenge();

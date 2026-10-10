@@ -8,9 +8,11 @@ import {
   TransactWriteItemsCommand,
   UpdateItemCommand,
   DeleteItemCommand,
+  PutItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { dynamoRefreshStore } from "../src/refresh-store.js";
 import { dynamoCodeStore } from "../src/crypto.js";
+import { dynamoClientStore } from "../src/client-store.js";
 import type { RefreshGrant } from "../src/refresh.js";
 const grant: RefreshGrant = {
   id: "family-id",
@@ -138,6 +140,26 @@ test("authorization code is consumed by one atomic delete with ALL_OLD", async (
   );
   assert.equal(await store.takeCode("code"), undefined);
   assert.equal(calls, 1);
+});
+
+test("registered clients use a separate durable namespace and consistent lookup", async () => {
+  const clientId = `oc_${"a".repeat(32)}`;
+  const redirect = "http://127.0.0.1:8989/oauth/callback";
+  const store = dynamoClientStore("table", mockClient((command) => {
+    if (command instanceof PutItemCommand) {
+      assert.equal(command.input.Item?.pk.S, `client:${clientId}`);
+      assert.equal(command.input.ConditionExpression, "attribute_not_exists(pk)");
+      assert.equal(command.input.Item?.ttl, undefined);
+      return {};
+    }
+    assert.ok(command instanceof GetItemCommand);
+    assert.equal(command.input.Key?.pk.S, `client:${clientId}`);
+    assert.equal(command.input.ConsistentRead, true);
+    return { Item: { redirectUris: { S: JSON.stringify([redirect]) }, scope: { S: "transactions:suggest" } } };
+  }));
+  const record = { clientId, redirectUris: [redirect], scope: "transactions:suggest" };
+  assert.equal(await store.putClient(record), true);
+  assert.deepEqual(await store.getClient(clientId), record);
 });
 
 test("malformed stored deadlines fail closed", async () => {
